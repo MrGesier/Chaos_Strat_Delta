@@ -7,8 +7,6 @@ B) Net P&L vs circulating CUSD supply
 C) Net LP APR vs TVL (flywheel efficiency region)
 D) P&L waterfall (breakdown of components)
 E) Heatmap: (CUSD supply, TVL) -> Net P&L
-
-Assumptions are intentionally simple & explicit so they can be defended in an interview.
 """
 
 import numpy as np
@@ -42,8 +40,9 @@ SUPPLY_MAX = 80_000_000
 TVL_MIN = 5_000_000
 TVL_MAX = 60_000_000
 
-# For heatmap constraints: max fraction of supply that can realistically sit in *one* pool
-MAX_TVL_SUPPLY_RATIO = 0.7   # e.g. TVL <= 70% of circulating CUSD
+# Max fraction of supply that can realistically sit in one pool
+# (mis en large pour ne PAS couper le cas 10M supply / 20M TVL)
+MAX_TVL_SUPPLY_RATIO = 10.0   
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -83,14 +82,10 @@ def net_incentive_pnl(tvl: float,
                       lp_share: float = LP_SHARE,
                       tvl_cap: float = TARGET_TVL) -> float:
     """
-    Net P&L from the incentive loop for us:
-    - We pay 'bribes' per year.
-    - LPs get emissions = leverage * bribes.
-    - Our share of emissions scales with TVL up to tvl_cap.
-    - Above tvl_cap we assume extra TVL is essentially un-incentivised.
+    Net P&L from the incentive loop for us.
     """
     emissions = leverage * bribes
-    utilisation = min(1.0, tvl / tvl_cap)  # how much of the 'designed' TVL we actually have
+    utilisation = min(1.0, tvl / tvl_cap)
     our_emissions = emissions * lp_share * utilisation
     return our_emissions - bribes
 
@@ -99,9 +94,8 @@ def net_program_pnl(cusd_supply: float,
                     overhead_haircut: float = 0.0) -> float:
     """
     Global P&L of the liquidity programme at given supply & TVL (USD / year).
-    overhead_haircut can be used to subtract a fixed cost (gas, ops) if desired.
     """
-    # Enforce TVL <= 70% of supply for realism
+    # Enforce TVL <= MAX_TVL_SUPPLY_RATIO * supply
     tvl_eff = min(tvl, MAX_TVL_SUPPLY_RATIO * cusd_supply)
 
     y_res = reserve_yield(cusd_supply)
@@ -123,7 +117,6 @@ def plot_bribes_vs_tvl():
         tvl = emissions / apr
         plt.plot(bribes_grid / 1e6, tvl / 1e6, marker="o", label=f"Target APR = {apr*100:.0f}%")
 
-    # Highlight our chosen point
     emissions_star = emissions_from_bribes(BRIBE_BUDGET)
     tvl_star = emissions_star / TARGET_INCENTIVE_APR
     plt.scatter(BRIBE_BUDGET / 1e6, tvl_star / 1e6, c="red", s=80, zorder=5,
@@ -161,10 +154,9 @@ def plot_pnl_vs_supply():
     ax1.set_xlabel("Circulating CUSD supply (M USD)")
     ax1.set_ylabel("Net annual P&L (M USD)", color="tab:blue")
     ax1.tick_params(axis='y', labelcolor="tab:blue")
-    ax1.set_title("Figure B — Net P&L vs CUSD supply (with fixed bribe budget)")
+    ax1.set_title("Figure B — Net P&L vs CUSD supply (fixed bribe budget)")
     ax1.grid(alpha=0.3)
 
-    # Highlight approx break-even region
     breakeven_indices = np.where(np.sign(pnls[:-1]) != np.sign(pnls[1:]))[0]
     if len(breakeven_indices) > 0:
         idx = breakeven_indices[0]
@@ -174,14 +166,12 @@ def plot_pnl_vs_supply():
                     label=f"Break-even ~{S_star/1e6:.1f}M CUSD")
         ax1.legend(loc="upper left")
 
-    # Optionally add secondary axis for TVL
     ax2 = ax1.twinx()
     ax2.plot(supplies / 1e6, tvls / 1e6, color="tab:orange", linestyle=":",
              label="Implied TVL")
     ax2.set_ylabel("Implied TVL (M USD)", color="tab:orange")
     ax2.tick_params(axis='y', labelcolor="tab:orange")
 
-    # Combine legends
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax2.legend(lines1 + lines2, labels1 + labels2, loc="lower right")
@@ -205,7 +195,6 @@ def plot_net_apr_vs_tvl():
     plt.plot(tvls / 1e6, fee_aprs * 100, label="Fee APR", color="tab:orange")
     plt.plot(tvls / 1e6, net_aprs * 100, label="Net APR", color="tab:green", linewidth=2)
 
-    # Highlight 20–30M "sweet spot"
     plt.axvspan(20, 30, color="grey", alpha=0.1, label="Target TVL 20–30M")
 
     plt.xlabel("Pool TVL (M USD)")
@@ -219,14 +208,13 @@ def plot_net_apr_vs_tvl():
 # FIGURE D — P&L waterfall for a reference point
 # =========================================================
 
-def plot_pnl_waterfall(reference_supply=25_000_000, reference_tvl=20_000_000):
+def plot_pnl_waterfall(reference_supply=10_000_000, reference_tvl=20_000_000):
     """
-    Waterfall at one reference point (e.g. 25M supply, 20M TVL).
+    Waterfall at one reference point (e.g. 10M supply, 20M TVL).
     """
     S = reference_supply
     T = reference_tvl
 
-    # Enforce constraint TVL <= 70% of supply
     T_eff = min(T, MAX_TVL_SUPPLY_RATIO * S)
 
     y_res = reserve_yield(S)
@@ -239,14 +227,10 @@ def plot_pnl_waterfall(reference_supply=25_000_000, reference_tvl=20_000_000):
 
     fig, ax = plt.subplots(figsize=(7, 4))
 
-    cumulative = 0.0
     xs = np.arange(len(components))
     colors = ["#4CAF50", "#2196F3", "#9C27B0", "#FF9800"]
 
     for i, v in enumerate(values):
-        # For waterfall: starting and ending point of the bar
-        start = cumulative
-        cumulative += v
         ax.bar(i, v / 1e6, color=colors[i])
         ax.text(i, (v / 1e6) * 0.5, f"{v/1e6:.2f}",
                 ha="center", va="center", color="white", fontsize=9)
@@ -286,14 +270,12 @@ def plot_pnl_heatmap():
     ax.set_ylabel("Pool TVL (M USD)")
     ax.set_title("Figure E — Net P&L heatmap (supply vs TVL)")
 
-    # Zero-P&L contour
     cs = ax.contour(S_grid / 1e6, T_grid / 1e6, pnl_grid,
                     levels=[0.0], colors="black", linewidths=1.2)
     ax.clabel(cs, fmt="P&L = 0", inline=True, fontsize=8)
 
-    # Mark a reference operating point (e.g. 25M supply, 20M TVL)
-    ax.scatter([25], [20], c="white", edgecolor="black", s=80,
-               label="Reference operating point")
+    ax.scatter([10], [20], c="white", edgecolor="black", s=80,
+               label="Example: 10M supply, 20M TVL")
     ax.legend(loc="lower right")
 
     fig.tight_layout()
@@ -305,19 +287,10 @@ def plot_pnl_heatmap():
 if __name__ == "__main__":
     plt.style.use("default")
 
-    # Figure A
     plot_bribes_vs_tvl()
-
-    # Figure B
     plot_pnl_vs_supply()
-
-    # Figure C
     plot_net_apr_vs_tvl()
-
-    # Figure D
-    plot_pnl_waterfall(reference_supply=25_000_000, reference_tvl=20_000_000)
-
-    # Figure E
+    plot_pnl_waterfall(reference_supply=10_000_000, reference_tvl=20_000_000)
     plot_pnl_heatmap()
 
     plt.show()
